@@ -1,0 +1,47 @@
+# SERVICE_CONNECTIONS.yaml — lead-capture-service
+# Format mirrors the master SERVICE_CONNECTIONS_MAP.yaml at the repo root.
+# This file documents the inbound subscriptions and outbound event contracts for THIS service only.
+
+service: lead-capture-service
+description: >
+  Pure inbound gateway. Captures multi-channel inbound messages (WhatsApp, Instagram,
+  Facebook, Email), deduplicates leads, and stores ordered conversation history in PostgreSQL.
+
+subscribes_to: []  # No upstream Kafka dependencies — pure inbound gateway (triggered via HTTP webhooks)
+
+produces:
+  - topic: perc.lead-events
+    event: lead.captured
+    kafka_key: leadId
+    payload_schema:
+      eventId: string
+      leadId: string
+      isNewLead: boolean          # KEY: routes to response-service (true) or followup-service (false)
+      channel: "whatsapp | instagram | facebook | email"
+      sourceReferenceId: string
+      conversationHistory:
+        - id: string
+          direction: "inbound | outbound"
+          content_type: "text | image | document"
+          content: object
+          sent_at: string         # ISO 8601 — strict chronological ordering
+      capturedAt: string          # ISO 8601
+    subscribers:
+      - service: response-service
+        filter: "isNewLead === true"
+        action: "Sends initial welcome WhatsApp message to the new lead"
+      - service: followup-service
+        filter: "isNewLead === false"
+        action: "Evaluates existing lead reply; detects meeting intent or routes to follow-up action"
+      - service: workflow-service
+        filter: none
+        action: "Creates or updates lead pipeline workflow instance"
+      - service: notification-service
+        filter: "isNewLead === true"
+        action: "Broadcasts NEW_LEAD_ALERT to sales team role"
+      - service: timeline-service
+        filter: none
+        action: "Logs LEAD_CAPTURED audit entry in lead's journey timeline"
+      - service: analytics-service
+        filter: none
+        action: "Records lead source attribution and arrival metrics"

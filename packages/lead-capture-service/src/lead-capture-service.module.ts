@@ -30,7 +30,7 @@ import { EngineModule } from './webhooks/engine.module';
     LeadService,
   ],
 })
-export class ApiGatewayModule implements OnModuleInit {
+export class LeadCaptureServiceModule implements OnModuleInit {
   constructor(private supabase: SupabaseClient) {}
 
   async onModuleInit() {

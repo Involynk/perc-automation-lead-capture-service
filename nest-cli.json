@@ -1,36 +1,18 @@
 {
   "$schema": "https://json.schemastore.org/nest-cli",
   "collection": "@nestjs/schematics",
-  "sourceRoot": "packages/api-gateway/src",
+  "sourceRoot": "packages/lead-capture-service/src",
   "compilerOptions": {
-    "tsConfigPath": "packages/api-gateway/tsconfig.json"
+    "tsConfigPath": "packages/lead-capture-service/tsconfig.json"
   },
   "projects": {
-    "api-gateway": {
+    "lead-capture-service": {
       "type": "application",
-      "root": "packages/api-gateway",
+      "root": "packages/lead-capture-service",
       "entryFile": "main",
-      "sourceRoot": "packages/api-gateway/src",
+      "sourceRoot": "packages/lead-capture-service/src",
       "compilerOptions": {
-        "tsConfigPath": "packages/api-gateway/tsconfig.json"
-      }
-    },
-    "communication-service": {
-      "type": "application",
-      "root": "packages/communication-service",
-      "entryFile": "main",
-      "sourceRoot": "packages/communication-service/src",
-      "compilerOptions": {
-        "tsConfigPath": "packages/communication-service/tsconfig.json"
-      }
-    },
-    "workflow-service": {
-      "type": "application",
-      "root": "packages/workflow-service",
-      "entryFile": "main",
-      "sourceRoot": "packages/workflow-service/src",
-      "compilerOptions": {
-        "tsConfigPath": "packages/workflow-service/tsconfig.json"
+        "tsConfigPath": "packages/lead-capture-service/tsconfig.json"
       }
     }
   }
