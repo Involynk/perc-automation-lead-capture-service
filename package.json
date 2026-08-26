@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build:shared": "rm -f packages/shared/tsconfig.tsbuildinfo && node node_modules/typescript/bin/tsc -p packages/shared/tsconfig.json",
+    "build:shared": "node -e \"const fs=require('fs');try{fs.unlinkSync('packages/shared/tsconfig.tsbuildinfo')}catch(e){}\" && node node_modules/typescript/bin/tsc -p packages/shared/tsconfig.json",
     "build": "npm run build:shared && node node_modules/@nestjs/cli/bin/nest.js build lead-capture-service",
     "start": "node node_modules/@nestjs/cli/bin/nest.js start lead-capture-service",
     "start:prod": "node dist/packages/lead-capture-service/src/main",

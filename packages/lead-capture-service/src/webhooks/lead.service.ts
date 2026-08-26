@@ -1,19 +1,23 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigService } from '@nestjs/config';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { LeadCapturedEvent } from '@perc/shared';
+import { KafkaService } from '../kafka/kafka.service';
 import { CategoryService } from './category.service';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class LeadService {
   private readonly logger = new Logger(LeadService.name);
+  private readonly kafkaTopic: string;
 
   constructor(
-    private supabase: SupabaseClient,
-    private categoryService: CategoryService,
-    private eventEmitter: EventEmitter2,
-  ) {}
+    private readonly supabase: SupabaseClient,
+    private readonly categoryService: CategoryService,
+    private readonly kafkaService: KafkaService,
+    private readonly configService: ConfigService,
+  ) {
+    this.kafkaTopic = this.configService.get<string>('KAFKA_TOPIC_LEAD_CAPTURED') || 'perc.lead-events';
+  }
 
   async captureInboundLead(params: {
     source: string;
@@ -28,19 +32,20 @@ export class LeadService {
     categories?: string[];
     metadata?: Record<string, unknown>;
   }): Promise<string> {
-    const leadId = crypto.randomUUID();
+    let leadId: string;
+    let isNewLead = true;
 
     let categories = params.categories;
     if (!categories) {
       categories = this.categoryService.detect(params.message);
     }
-
     const categoryStr = categories.join(',');
 
     const triggerEvent = this.categoryService.detectTriggerEvent(params.message);
     const confidence = this.categoryService.computeConfidence(params.message, triggerEvent);
     const entities = await this.categoryService.detectEntities(params.message);
 
+    // 1. Deduplication check by phone
     if (params.phone) {
       const { data: existing } = await this.supabase
         .from('leads')
@@ -50,63 +55,87 @@ export class LeadService {
         .maybeSingle();
 
       if (existing) {
+        leadId = existing.id;
+        isNewLead = false;
+
         await this.supabase
           .from('leads')
           .update({ last_contacted_at: new Date().toISOString() })
           .eq('id', existing.id);
-
-        await this.storeMessage(existing.id, params.source, params.message || '', params.content_type || 'text', params.channel_message_id);
-        return existing.id;
+      } else {
+        leadId = crypto.randomUUID();
       }
+    } else {
+      leadId = crypto.randomUUID();
     }
 
-    const metadata = {
-      ...(params.metadata || {}),
-      trigger_event: triggerEvent,
-      nlp_confidence_score: confidence,
-      course_id: entities.course_id || null,
-      branch_id: entities.branch_id || null,
-    };
+    // 2. If new lead, persist lead and initial workflow
+    if (isNewLead) {
+      const metadata = {
+        ...(params.metadata || {}),
+        trigger_event: triggerEvent,
+        nlp_confidence_score: confidence,
+        course_id: entities.course_id || null,
+        branch_id: entities.branch_id || null,
+      };
 
-    await this.supabase.from('leads').insert({
-      id: leadId,
-      first_name: params.first_name.slice(0, 100),
-      phone: params.phone || null,
-      email: params.email || null,
-      source: params.source,
-      source_reference_id: params.source_reference_id || null,
-      category: categoryStr,
-      status: 'new',
-      metadata: JSON.stringify(metadata),
-    });
+      await this.supabase.from('leads').insert({
+        id: leadId,
+        first_name: params.first_name.slice(0, 100),
+        phone: params.phone || null,
+        email: params.email || null,
+        source: params.source,
+        source_reference_id: params.source_reference_id || null,
+        category: categoryStr,
+        status: 'new',
+        metadata: JSON.stringify(metadata),
+      });
 
+      await this.supabase.from('workflow_instances').insert({
+        id: crypto.randomUUID(),
+        lead_id: leadId,
+        current_state: 'new',
+      });
+
+      await this.supabase.from('timeline_events').insert({
+        id: crypto.randomUUID(),
+        lead_id: leadId,
+        event_type_id: 'evt_lead_created',
+        actor_type: 'system',
+        description: `Lead created via ${params.source}`,
+        metadata: JSON.stringify(params.metadata || {}),
+      });
+    }
+
+    // 3. Store inbound message
     if (params.message) {
       await this.storeMessage(leadId, params.source, params.message, params.content_type || 'text', params.channel_message_id);
     }
 
-    await this.supabase
-      .from('leads')
-      .update({ category: categoryStr })
-      .eq('id', leadId);
+    // 4. Retrieve ordered conversation history for the lead
+    const conversationHistory = await this.getConversationHistory(leadId);
 
-    this.eventEmitter.emitAsync(
-      'lead.captured',
-      new LeadCapturedEvent(
-        leadId,
-        params.source,
-        params.first_name,
-        params.phone || null,
-        params.email || null,
+    // 5. Produce lead.captured event to Kafka topic 'perc.lead-events'
+    const eventId = `evt_${crypto.randomUUID()}`;
+    const kafkaPayload = {
+      eventId,
+      leadId,
+      isNewLead,
+      channel: params.source,
+      sourceReferenceId: params.source_reference_id || '',
+      conversationHistory,
+      capturedAt: new Date().toISOString(),
+      metadata: {
+        trigger_event: triggerEvent,
         categories,
-        params.message,
-        params.metadata,
-        triggerEvent,
-        entities.course_id,
-        entities.branch_id,
-        undefined,
         confidence,
-      ),
-    ).catch((err: Error) => this.logger.error(`lead.captured handler failed: ${err.message}`, err.stack));
+        course_id: entities.course_id || null,
+        branch_id: entities.branch_id || null,
+        ...(params.metadata || {}),
+      },
+    };
+
+    await this.kafkaService.emitEvent(this.kafkaTopic, leadId, kafkaPayload);
 
     return leadId;
   }
@@ -166,5 +195,27 @@ export class LeadService {
       .from('leads')
       .update({ last_contacted_at: new Date().toISOString() })
       .eq('id', leadId);
+  }
+
+  private async getConversationHistory(leadId: string): Promise<Array<{
+    id: string;
+    direction: string;
+    content_type: string;
+    content: any;
+    sent_at: string;
+  }>> {
+    const { data: messages } = await this.supabase
+      .from('messages')
+      .select('id, direction, content_type, content, sent_at')
+      .eq('lead_id', leadId)
+      .order('sent_at', { ascending: true });
+
+    return (messages || []).map((m) => ({
+      id: m.id,
+      direction: m.direction,
+      content_type: m.content_type,
+      content: m.content,
+      sent_at: m.sent_at,
+    }));
   }
 }

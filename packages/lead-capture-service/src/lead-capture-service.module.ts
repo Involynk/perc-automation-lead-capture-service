@@ -1,9 +1,9 @@
 import { Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { EventEmitterModule } from '@nestjs/event-emitter';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { seedDatabase } from '@perc/shared';
 import { SupabaseModule } from './supabase/supabase.module';
+import { KafkaModule } from './kafka/kafka.module';
 import { WebhookController } from './webhooks/webhook.controller';
 import { LeadController } from './webhooks/lead.controller';
 import { MessageController } from './webhooks/message.controller';
@@ -15,7 +15,7 @@ import { EngineModule } from './webhooks/engine.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
-    EventEmitterModule.forRoot(),
+    KafkaModule,
     SupabaseModule,
     EngineModule,
   ],
