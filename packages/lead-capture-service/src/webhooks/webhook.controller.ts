@@ -7,6 +7,19 @@ const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN || 'perc
 const IG_VERIFY_TOKEN = process.env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN || 'perc_ig_webhook_verify_2026';
 const FB_VERIFY_TOKEN = process.env.FACEBOOK_WEBHOOK_VERIFY_TOKEN || 'perc_fb_webhook_verify_2026';
 
+const processedMessageIds = new Set<string>();
+
+function isDuplicateMessage(msgId: string): boolean {
+  if (!msgId) return false;
+  if (processedMessageIds.has(msgId)) return true;
+  processedMessageIds.add(msgId);
+  if (processedMessageIds.size > 5000) {
+    const first = processedMessageIds.values().next().value;
+    if (first) processedMessageIds.delete(first);
+  }
+  return false;
+}
+
 @Controller()
 export class WebhookController {
   constructor(private leadService: LeadService) {}
@@ -22,16 +35,27 @@ export class WebhookController {
   }
 
   @Post('/webhooks/whatsapp')
-  async processWhatsApp(@Req() req: Request): Promise<{ status: string }> {
+  async processWhatsApp(@Req() req: Request, @Res() res: Response): Promise<void> {
     const data = req.body;
+
+    // 1. Immediately return HTTP 200 OK to Meta so Meta Cloud API never retries (3s timeout)
+    res.status(200).json({ status: 'ok' });
+
     const changes = data?.entry?.[0]?.changes?.[0]?.value || {};
     const messages = changes.messages || [];
     const contacts = changes.contacts || [];
     const metadata = changes.metadata || {};
 
     for (const msg of messages) {
-      const fromPhone = msg.from || '';
       const msgId = msg.id || '';
+
+      // 2. Skip duplicate message IDs
+      if (msgId && isDuplicateMessage(msgId)) {
+        console.log(`⚠️ [WebhookController] Duplicate WhatsApp messageId '${msgId}' skipped.`);
+        continue;
+      }
+
+      const fromPhone = msg.from || '';
       const msgType = msg.type || 'text';
       const timestamp = msg.timestamp || '';
 
@@ -49,7 +73,8 @@ export class WebhookController {
       else if (msgType === 'button') content = msg.button?.text || '';
       else content = JSON.stringify(msg);
 
-      await this.leadService.captureInboundLead({
+      // 3. Process lead capture asynchronously in background
+      this.leadService.captureInboundLead({
         source: 'whatsapp',
         source_reference_id: fromPhone,
         first_name: contactName || fromPhone,
@@ -58,10 +83,10 @@ export class WebhookController {
         content_type: contentType,
         channel_message_id: msgId,
         metadata: { whatsapp_msg_type: msgType, timestamp, phone_number_id: metadata.phone_number_id || '' },
+      }).catch((err) => {
+        console.error(`❌ [WebhookController] Error capturing inbound WhatsApp lead:`, err);
       });
     }
-
-    return { status: 'ok' };
   }
 
   @Get('/webhooks/instagram')
